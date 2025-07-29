@@ -115,6 +115,7 @@
           - php8.4-zip
           - php8.4-pdo
           - php8.4-mysqlnd
+          - php8.4-sqlite3
       notify:
         - restart php8.4-fpm
 
@@ -139,6 +140,8 @@
       copy:
         src: "roles/php/files/www.conf"
         dest: "/etc/php/8.4/fpm/pool.d/www.conf"
+      notify:
+        - restart php8.4-fpm
 
     - name: Create /var/www/html/api directory
       file:
@@ -156,14 +159,15 @@
         working_dir: /var/www/html/api
         prefer_dist: yes
         no_dev: no
-      become: no
+      become: yes
+      become_user: www-data
       ignore_errors: yes
 
     - name: Change permissions on /var/www/html/api
       file:
         path: /var/www/html/api
         state: directory
-        mode: '0775'
+        mode: '0755'
         owner: "{{ api_user }}"
         group: "{{ api_group }}"
         recurse: yes
