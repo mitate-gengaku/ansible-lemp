@@ -1,0 +1,239 @@
+- name: LEMPサーバーの構築
+  hosts: localhost
+  become: yes
+
+  vars:
+      api_user: "www-data"
+      api_group: "www-data"
+      db_name: "test"
+      db_user_name: "laravel"
+      db_user_password: "password"
+
+  tasks:
+    # apt
+    - name: Update packages
+      apt:
+        update_cache: yes
+
+    # MariaDB
+    - name: Install required packages
+      apt:
+        name:
+          - python3-pymysql
+
+    - name: Install MariaDB
+      apt:
+        name:
+          - mariadb-server
+      notify:
+        - restart mariadb
+
+    - name: Create database
+      mysql_db:
+        login_unix_socket: /var/run/mysqld/mysqld.sock
+        login_user: root
+        login_password: ""
+        name: "{{ db_name }}"
+        state: present
+        encoding: utf8mb4
+        collation: utf8mb4_general_ci
+
+    - name: Create database user
+      mysql_user:
+        login_unix_socket: /var/run/mysqld/mysqld.sock
+        login_user: root
+        login_password: ""
+        name: "{{ db_user_name }}"
+        password: "{{ db_user_password }}"
+        host: localhost
+        priv: '*.*:ALL'
+        state: present
+
+    # Nginx
+    - name: Install Nginx
+      apt:
+        name:
+          - nginx
+
+    - name: Copy config file
+      copy:
+        src: "roles/nginx/files/nginx.conf"
+        dest: "/etc/nginx"
+
+    - name: Check file syntax
+      shell: 
+        cmd: nginx -t
+      notify:
+        - restart nginx
+
+    # PHP
+    - name: Install required packages
+      apt:
+        name:
+          - lsb-release
+          - ca-certificates
+          - curl
+          - apt-transport-https
+
+    - name: Download keyring file
+      get_url:
+        url: https://packages.sury.org/debsuryorg-archive-keyring.deb
+        dest: /tmp/debsuryorg-archive-keyring.deb
+        mode: '0644'
+
+    - name: Install GPG keyring packages
+      apt:
+        deb: /tmp/debsuryorg-archive-keyring.deb
+        state: present
+
+    - name: Add PHP repository
+      apt_repository:
+       repo: "deb [signed-by=/usr/share/keyrings/deb.sury.org-php.gpg] https://packages.sury.org/php/ {{ ansible_distribution_release }} main"
+       filename: php
+       state: present
+
+    - name: Update packages
+      apt:
+        update_cache: yes
+
+    - name: Install PHP packages
+      apt:
+        name:
+          - php8.4
+          - php8.4-cli
+          - php8.4-fpm
+          - php8.4-bcmath
+          - php8.4-bz2
+          - php8.4-curl
+          - php8.4-gd
+          - php8.4-gmp
+          - php8.4-intl
+          - php8.4-mbstring
+          - php8.4-opcache
+          - php8.4-readline
+          - php8.4-xml
+          - php8.4-zip
+          - php8.4-pdo
+          - php8.4-mysqlnd
+      notify:
+        - restart php8.4-fpm
+
+    - name: Download Composer installer
+      get_url:
+        url: https://getcomposer.org/installer
+        dest: /tmp/composer-installer.php
+        mode: "0644"
+
+    - name: Install Composer
+      become: true
+      shell:
+        cmd: php /tmp/composer-installer.php --install-dir=/usr/bin --filename=composer
+        creates: /usr/bin/composer
+
+    - name: Clean up
+      file:
+        path: /tmp/composer-installer.php
+        state: absent
+
+    - name: Copy www.conf
+      copy:
+        src: "roles/php/files/www.conf"
+        dest: "/etc/php/8.4/fpm/pool.d/www.conf"
+
+    - name: Create /var/www/html/api directory
+      file:
+        path: /var/www/html/api
+        state: directory
+        mode: '0775'
+        owner: "{{ api_user }}"
+        group: "{{ api_group }}"
+        recurse: yes
+
+    - name: Create Laravel project
+      composer:
+        command: create-project
+        arguments: laravel/laravel .
+        working_dir: /var/www/html/api
+        prefer_dist: yes
+        no_dev: no
+      become: no
+      ignore_errors: yes
+
+    - name: Change permissions on /var/www/html/api
+      file:
+        path: /var/www/html/api
+        state: directory
+        mode: '0775'
+        owner: "{{ api_user }}"
+        group: "{{ api_group }}"
+        recurse: yes
+
+    - name: Comment out DB_CONNECTION
+      lineinfile:
+        path: /var/www/html/api/.env
+        regexp: '^DB_CONNECTION=sqlite$'
+        line: 'DB_CONNECTION=mariadb'
+
+    - name: Set DB_HOST
+      lineinfile:
+        path: /var/www/html/api/.env
+        regexp: '^# DB_HOST=127\.0\.0\.1$'
+        line: 'DB_HOST=127.0.0.1'
+      
+    - name: Set DB_PORT
+      lineinfile:
+        path: /var/www/html/api/.env
+        regexp: '^# DB_PORT=3306$'
+        line: 'DB_PORT=3306'
+
+    - name: Set DB_DATABASE
+      lineinfile:
+        path: /var/www/html/api/.env
+        regexp: '^# DB_DATABASE=laravel$'
+        line: 'DB_DATABASE=test'
+
+    - name: Set DB_USERNAME
+      lineinfile:
+        path: /var/www/html/api/.env
+        regexp: '^# DB_USERNAME=root$'
+        line: 'DB_USERNAME=laravel'
+
+    - name: Set DB_PASSWORD
+      lineinfile:
+        path: /var/www/html/api/.env
+        regexp: '^# DB_PASSWORD=$'
+        line: 'DB_PASSWORD=password'
+
+    - name: Clear cache
+      shell: |
+        php artisan optimize:clear
+        php artisan config:cache
+      args:
+        chdir: /var/www/html/api
+
+    - name: Migration
+      shell:
+        cmd: php artisan migrate
+        chdir: /var/www/html/api
+
+  handlers:
+    - name: "restart mariadb"
+      systemd:
+        name: mariadb
+        state: restarted
+        daemon_reload: yes
+        enabled: yes
+
+    - name: "restart nginx"
+      systemd:
+        name: nginx
+        state: restarted
+        daemon_reload: yes
+        enabled: yes
+
+    - name: "restart php8.4-fpm"
+      systemd:
+        name: php8.4-fpm
+        state: restarted
+        daemon_reload: yes
+        enabled: yes
